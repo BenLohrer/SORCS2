@@ -1,0 +1,162 @@
+---
+title: "SORCS2_Genetics"
+author: "SteveYounkin"
+date: "October 21, 2015"
+output: html_document
+---
+
+##Analysis Plan
+
+We will pursue a simple, straightforward analysis of our SORCS2 genotypes using a robust, R-based reproducible research approach. This will (i) provide a single document that gives us a complete account of our genetic analysis of SORCS2 and (ii) familiarize us with a scalable, cutting-edge  approach that is capable of handling far more complicated analyses on large datasets.
+
+For openers, we will try to keep all of our work in this one R Markdown document.  
+For help with R Markdown syntax, [link]https://www.rstudio.com/wp-content/uploads/2015/02/rmarkdown-cheatsheet.pdf
+may be useful.
+
+To communicate with one another as we build this document, we will use my github account ([link]https://github.com/StevenGYounkin/SORCS2, and we will all use git for version control. For help with git, [link]https://training.github.com/kit/downloads/github-git-cheat-sheet.pdf may be useful. I would like Joseph to take responsiblity for understanding how best to do this and for providing whatever help may be needed for each of us to interact effectively with one another to produce a final document.
+
+Our goal, which we may or may not achieve, will be to complete a "publication ready"" PLoS ONE manuscript by Monday, November 16 - three weeks from now.
+
+###Person(s) Responsible for Specific Analysis Steps
+
+1. Provide existing SORCS2 dataset(s)
++       Steve will do this
+2. Download ADSP SORCS2 dataset
++       Joseph will do this as the data become available (3000 samples should soon be ready)
+3. Create a working dataset for analysis
++       Ben and Leonie will do this using dplyr to create PLINK .map and .ped files 
++       These files will be used for analyzing SORCS2 variants by calling PLINK from R
++       This will probably require installation of PLINK on your local computer
++       
+Be sure to install.packages("dplyr") so that you can call dplyr with library(dplyr)
+
+[link]http://pngu.mgh.harvard.edu/~purcell/plink/ provides excellent documentation
+[link]https://www.rstudio.com/wp-content/uploads/2015/02/data-wrangling-cheatsheet.pdf may be useful  
+
+###Steve's Content
+The data we have on the 4 common SORCS2 missense variants in the Younkin database (YdB) was captured using the following query:
+
+SELECT        TOP (100) PERCENT Younkin.dbo.Subject.SubKey, Younkin.dbo.Subject.SubjectIDType, Younkin.dbo.Subject.SubjectIDValue, Younkin.dbo.Subject.Series, 
+                         Younkin.dbo.Subject.Dx, Younkin.dbo.Subject.ApoE, Younkin.dbo.Subject.DxAge, Younkin.dbo.Subject.Gend, Younkin.dbo.Variant.VariantID, 
+                         Younkin.dbo.Variant.VariantName, Younkin.dbo.VariantDataAll.Call, Younkin.dbo.VariantDataAll.BestCall, Younkin.dbo.Variant_New.chr, 
+                         Younkin.dbo.Variant_New.position, Younkin.dbo.Variant_New.rs
+FROM            Younkin.dbo.VariantDataAll INNER JOIN
+                         Younkin.dbo.Variant ON Younkin.dbo.VariantDataAll.VariantID = Younkin.dbo.Variant.VariantID INNER JOIN
+                         Younkin.dbo.Subject ON Younkin.dbo.VariantDataAll.SKey = Younkin.dbo.Subject.SubKey INNER JOIN
+                         Younkin.dbo.Variant_New ON Younkin.dbo.VariantDataAll.VariantID = Younkin.dbo.Variant_New.VariantID
+WHERE        (Younkin.dbo.Variant.VariantID = 2069 OR
+                         Younkin.dbo.Variant.VariantID = 2070 OR
+                         Younkin.dbo.Variant.VariantID = 2072 OR
+                         Younkin.dbo.Variant.VariantID = 2073)
+ORDER BY Younkin.dbo.Variant.VariantID
+
+The results of this query were copied into SORCS2_Ydb.csv
+
+
+
+```{r}
+        #Read in data on 4 common SORCS2 missense variants in the Younkin database
+SORCS2_YdB <- read.csv("SORCS2_Ydb.csv", stringsAsFactors = FALSE)
+str(SORCS2_YdB)
+
+        #Filter, using dplyr package, to include only subjects with: 
+        #Dx = AD or CON, Gend = M or F, ApoE = 22,23,24,33,34,or 44 
+        #Series = JS,SibPair_White,RS,AUT,Indiana,NW, DxAge >= 65, BestCall = 1
+        #Age (at diagnosis for AD/at entry for CON) of 65 or over
+library(dplyr)
+dx <- c("AD","CON")
+sex <- c("M","F")
+apoe <- c(22,23,24,33,34,44)
+series <- c("JS", "RS", "AUT", "Indiana", "SibPair_White", "NW")
+SORCS2 <- filter(SORCS2_YdB, Dx %in% dx, Gend %in% sex, ApoE %in% apoe, Series %in% series, BestCall == 1)
+SORCS2 <- mutate(SORCS2,Age=as.numeric(DxAge))
+SORCS2 <- filter (SORCS2, Age >= 65)
+
+        #Create PLINK map file
+library(data.table)
+map <- select(SORCS2,chr, rs, position)
+map <- mutate(map,morgans=0)
+map <- rename(map, bp=position)
+map <- select(map,chr,rs,morgans,bp)
+map <- distinct(map)
+print(map)
+write.table(map,"SORCS2.map",sep='\t',quote=FALSE,row.names=F,col.names=F)
+SORCS2map=read.table("SORCS2.map", header = F)
+print(SORCS2map,row.names=F,col.names=F)
+
+        #Create variables for PLINK fam, cov, and lgen files
+SORCS2 <- mutate(SORCS2, AFF=99, A1=99, A2=99, APOE4dose=99, APOE2dose=99, SEX=99, JS=0, RS=0, AUT=0, NCRAD=0, NW=0, FID=0, IID=SubKey, PID=0, MID=0)
+
+SORCS2[SORCS2$Dx == "AD",][, "AFF"] <- 2
+SORCS2[SORCS2$Dx == "CON",][, "AFF"] <- 1
+
+SORCS2[SORCS2$Call == 11,][, "A1"] <- 1
+SORCS2[SORCS2$Call == 12,][, "A1"] <- 1
+SORCS2[SORCS2$Call == 22,][, "A1"] <- 2
+
+SORCS2[SORCS2$Call == 11,][, "A2"] <- 1
+SORCS2[SORCS2$Call == 12,][, "A2"] <- 2
+SORCS2[SORCS2$Call == 22,][, "A2"] <- 2
+
+SORCS2[SORCS2$Gend == "M",][, "SEX"] <- 1
+SORCS2[SORCS2$Gend == "F",][, "SEX"] <- 2
+
+SORCS2[SORCS2$ApoE == 22,][, "APOE4dose"] <- 0
+SORCS2[SORCS2$ApoE == 23,][, "APOE4dose"] <- 0
+SORCS2[SORCS2$ApoE == 24,][, "APOE4dose"] <- 1
+SORCS2[SORCS2$ApoE == 33,][, "APOE4dose"] <- 0
+SORCS2[SORCS2$ApoE == 34,][, "APOE4dose"] <- 1
+SORCS2[SORCS2$ApoE == 44,][, "APOE4dose"] <- 2
+
+SORCS2[SORCS2$ApoE == 22,][, "APOE2dose"] <- 2
+SORCS2[SORCS2$ApoE == 23,][, "APOE2dose"] <- 1
+SORCS2[SORCS2$ApoE == 24,][, "APOE2dose"] <- 1
+SORCS2[SORCS2$ApoE == 33,][, "APOE2dose"] <- 0
+SORCS2[SORCS2$ApoE == 34,][, "APOE2dose"] <- 0
+SORCS2[SORCS2$ApoE == 44,][, "APOE2dose"] <- 0
+
+SORCS2[SORCS2$Series == "JS",][, "JS"] <- 1
+SORCS2[SORCS2$Series == "SibPair_White",][, "JS"] <- 1
+SORCS2[SORCS2$Series == "RS",][, "RS"] <- 1
+SORCS2[SORCS2$Series == "AUT",][, "AUT"] <- 1
+SORCS2[SORCS2$Series == "Indiana",][, "NCRAD"] <- 1
+SORCS2[SORCS2$Series == "NW",][, "NW"] <- 1
+
+y <- SORCS2 %>% filter(rs=="rs6816604",JS==1) %>% group_by(rs,Dx,A1,A2) %>% summarize(n=n())
+print(y)
+
+        #Create PLINK fam file
+fam <- select(SORCS2,FID,IID,PID,MID,SEX,AFF)
+fam <- distinct(fam)
+str(fam)
+write.table(fam,"SORCS2.fam",sep='\t',quote=FALSE,row.names=F,col.names=F)
+SORCS2fam=read.table("SORCS2.fam", header = F)
+str(SORCS2fam)
+
+        #Create PLINK cov file
+cov <- select(SORCS2,FID,IID,JS,RS,AUT,NCRAD,NW,SEX,Age,APOE4dose,APOE2dose)
+cov <- distinct(cov)
+str(cov)
+write.table(cov,"SORCS2cov.txt",sep='\t',quote=FALSE,row.names=F,col.names=T)
+SORCS2cov=read.table("SORCS2cov.txt", header = T)
+str(SORCS2cov)
+
+        #Create PLINK lgen file
+lgen <- select(SORCS2,FID,IID,rs,A1,A2)
+str(lgen)
+write.table(lgen,"SORCS2.lgen",sep='\t',quote=FALSE,row.names=F,col.names=F)
+SORCS2lgen=read.table("SORCS2.lgen", header = F)
+str(SORCS2lgen)
+
+system("plink --lfile SORCS2 --assoc --out SORCS2logAssoc")
+system("plink --lfile SORCS2 --logistic --ci 0.95 --covar SORCS2cov.txt --covar-name RS,AUT,NCRAD,NW,SEX,Age,APOE4dose,APOE2dose --out SORCS2logAllCov")
+```
+test3
+###Ben and Leonie's Content
+```{r}
+library(dplyr)
+```
+
+
+
+
